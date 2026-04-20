@@ -71,6 +71,7 @@ async def generate_report(
     relaxation_minutes: int = Form(5),
     working_days: str = Form("0,1,2,3,4"),
     monthly_leave: int = Form(1),
+    off_days: str = Form(""),
 ):
     """Process attendance data and return generated Excel file."""
     content = await file.read()
@@ -80,12 +81,14 @@ async def generate_report(
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
 
     wd_list = [int(x) for x in working_days.split(",") if x.strip()]
+    off_days_set = {d.strip() for d in off_days.split(",") if d.strip()}
     settings = {
         "school_time": school_time,
         "staff_timing": staff_timing,
         "relaxation_minutes": relaxation_minutes,
         "working_days": wd_list,
         "monthly_leave": monthly_leave,
+        "off_days": off_days_set,
     }
 
     teachers_data, national_holidays = calculate_stats(records, settings)
@@ -154,6 +157,13 @@ def calculate_stats(records: list, settings: dict):
     working_days_set = set(settings["working_days"])
     cutoff = build_cutoff(settings["staff_timing"], settings["relaxation_minutes"])
 
+    off_days_dates = set()
+    for ds in settings.get("off_days", set()):
+        try:
+            off_days_dates.add(datetime.strptime(ds, "%Y-%m-%d").date())
+        except ValueError:
+            continue
+
     # Group by teacher preserving insertion order
     teachers: dict = {}
     for r in records:
@@ -174,15 +184,16 @@ def calculate_stats(records: list, settings: dict):
         date(year, month, d)
         for d in range(1, num_days + 1)
         if date(year, month, d).weekday() in working_days_set
+        and date(year, month, d) not in off_days_dates
     ]
 
-    # Days where at least one teacher has an In record
+    # Days where at least one teacher has an In record (excluding custom off days)
     days_with_any_in: set = set()
     for teacher in teachers.values():
         for r in teacher["records"]:
             if r["status"].lower() == "in":
                 d = r["datetime"].date()
-                if d.weekday() in working_days_set:
+                if d.weekday() in working_days_set and d not in off_days_dates:
                     days_with_any_in.add(d)
 
     # National holidays: working days with ZERO attendance across all teachers
@@ -198,7 +209,7 @@ def calculate_stats(records: list, settings: dict):
         late = 0
 
         for d, day_records in records_by_day.items():
-            if d.weekday() not in working_days_set:
+            if d.weekday() not in working_days_set or d in off_days_dates:
                 continue
             in_records = [r for r in day_records if r["status"].lower() == "in"]
             if not in_records:
@@ -212,6 +223,7 @@ def calculate_stats(records: list, settings: dict):
         days_teacher_attended = {
             d for d in records_by_day
             if d.weekday() in working_days_set
+            and d not in off_days_dates
             and any(r["status"].lower() == "in" for r in records_by_day[d])
         }
         leave = len(

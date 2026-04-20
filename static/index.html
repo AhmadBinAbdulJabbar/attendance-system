@@ -847,6 +847,123 @@
       margin-right: 5px;
       vertical-align: middle;
     }
+
+    /* ── Custom Off Days Calendar ── */
+    .cal-section { margin-top: 20px; }
+
+    .cal-container {
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #FAFBFD;
+      margin-top: 10px;
+    }
+
+    .cal-head {
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: white;
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .cal-head-title { font-size: 15px; font-weight: 700; }
+
+    .cal-head-badge {
+      font-size: 12px;
+      background: rgba(255,255,255,0.2);
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      padding: 12px;
+    }
+
+    .cal-dh {
+      text-align: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      padding: 4px 0 6px;
+      letter-spacing: 0.4px;
+    }
+
+    .cal-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.15s;
+      position: relative;
+      user-select: none;
+    }
+
+    .cal-day.cal-empty { visibility: hidden; }
+
+    .cal-day.cal-nonwork {
+      color: #C8D4E0;
+      background: #F5F7FA;
+      font-weight: 400;
+      font-size: 12px;
+      cursor: default;
+    }
+
+    .cal-day.cal-work {
+      color: var(--text);
+      background: white;
+      border: 1.5px solid var(--border);
+      cursor: pointer;
+    }
+
+    .cal-day.cal-work:hover { border-color: var(--accent); color: var(--accent); background: #EBF5FF; }
+
+    .cal-day.cal-off {
+      background: #FFEBEE;
+      border: 2px solid #EF5350;
+      color: #C62828;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .cal-day.cal-off:hover { background: #FFCDD2; }
+
+    .cal-day.cal-off::after {
+      content: '';
+      position: absolute;
+      top: 2px; right: 3px;
+      width: 5px; height: 5px;
+      background: #EF5350;
+      border-radius: 50%;
+    }
+
+    .cal-legend {
+      display: flex;
+      gap: 14px;
+      padding: 8px 14px;
+      background: #F5F7FA;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+
+    .cal-leg-item { display: flex; align-items: center; gap: 6px; }
+
+    .cal-leg-dot {
+      width: 12px; height: 12px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -952,6 +1069,30 @@
       <span class="hint" style="margin-top:8px">
         Days with <strong>zero attendance</strong> across all teachers are auto-detected as national holidays.
       </span>
+    </div>
+
+    <div class="divider" style="margin: 20px 0 0"></div>
+
+    <!-- Custom Off Days Calendar -->
+    <div class="cal-section">
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted);letter-spacing:0.6px;text-transform:uppercase;display:block;margin-bottom:10px">
+        Custom Off Days <span style="font-size:11px;color:#9BAABB;text-transform:none;font-weight:400;letter-spacing:0">&nbsp;— Public Holidays &amp; Special Leave</span>
+      </label>
+      <div class="cal-container">
+        <div class="cal-head">
+          <span class="cal-head-title" id="cal-month-title">Upload a file to load calendar</span>
+          <span class="cal-head-badge" id="cal-off-badge">0 off days</span>
+        </div>
+        <div class="cal-grid" id="calendar-grid">
+          <div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:24px;font-size:13px">Upload a file to see the calendar</div>
+        </div>
+        <div class="cal-legend">
+          <div class="cal-leg-item"><div class="cal-leg-dot" style="background:white;border:1.5px solid var(--border)"></div><span>Working day — click to mark off</span></div>
+          <div class="cal-leg-item"><div class="cal-leg-dot" style="background:#FFEBEE;border:2px solid #EF5350"></div><span>Custom off day — click to remove</span></div>
+          <div class="cal-leg-item"><div class="cal-leg-dot" style="background:#F5F7FA"></div><span>Non-working weekday</span></div>
+        </div>
+      </div>
+      <span class="hint" style="margin-top:8px;display:block">Marked off days are excluded from the working calendar — they won't count as leave or attendance.</span>
     </div>
 
     <div class="info-box" style="margin-top:16px">
@@ -1072,11 +1213,93 @@
   let selectedFile = null;
   let uploadedTeachers = [];
   let allRecords = [];   // full record list from server
+  let customOffDays = new Set();  // Set of "YYYY-MM-DD" strings
+  let calendarMonth = null;       // { year, month } where month is 0-indexed (JS)
 
   const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   // JS getDay(): 0=Sun,1=Mon,...,6=Sat
   // Python weekday: 0=Mon,...,6=Sun  → map: jsDay → pythonDay
   function jsDayToPython(jsDay) { return jsDay === 0 ? 6 : jsDay - 1; }
+
+  // ── Calendar ──────────────────────────────────────────────────
+  function renderCalendar() {
+    const grid = document.getElementById('calendar-grid');
+    grid.innerHTML = '';
+
+    if (!calendarMonth) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:24px;font-size:13px">Upload a file to see the calendar</div>';
+      return;
+    }
+
+    const { year, month } = calendarMonth;
+    const monthName = new Date(year, month).toLocaleString('default', { month: 'long', year: 'numeric' });
+    document.getElementById('cal-month-title').textContent = monthName;
+    const offCount = customOffDays.size;
+    document.getElementById('cal-off-badge').textContent =
+      offCount === 0 ? '0 off days' : `${offCount} off day${offCount !== 1 ? 's' : ''}`;
+
+    const workingDays = new Set(
+      [...document.querySelectorAll('.day-chip input:checked')].map(c => parseInt(c.value))
+    );
+
+    // Day-of-week headers (Mon … Sun)
+    ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].forEach(d => {
+      const h = document.createElement('div');
+      h.className = 'cal-dh';
+      h.textContent = d;
+      grid.appendChild(h);
+    });
+
+    // Leading empty cells (Monday = column 0)
+    const firstDay = new Date(year, month, 1);
+    const startOffset = (firstDay.getDay() + 6) % 7;
+    for (let i = 0; i < startOffset; i++) {
+      const e = document.createElement('div');
+      e.className = 'cal-day cal-empty';
+      grid.appendChild(e);
+    }
+
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dt = new Date(year, month, d);
+      const pyDay = jsDayToPython(dt.getDay());
+      const isWorkingWeekday = workingDays.has(pyDay);
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const isOff = customOffDays.has(dateStr);
+
+      const cell = document.createElement('div');
+      cell.textContent = d;
+
+      if (!isWorkingWeekday) {
+        cell.className = 'cal-day cal-nonwork';
+        cell.title = dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' — Non-working weekday';
+      } else if (isOff) {
+        cell.className = 'cal-day cal-off';
+        cell.title = dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' — Off day (click to remove)';
+        cell.addEventListener('click', () => toggleOffDay(dateStr));
+      } else {
+        cell.className = 'cal-day cal-work';
+        cell.title = dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' — Working day (click to mark off)';
+        cell.addEventListener('click', () => toggleOffDay(dateStr));
+      }
+
+      grid.appendChild(cell);
+    }
+  }
+
+  function toggleOffDay(dateStr) {
+    if (customOffDays.has(dateStr)) {
+      customOffDays.delete(dateStr);
+    } else {
+      customOffDays.add(dateStr);
+    }
+    renderCalendar();
+  }
+
+  // Re-render calendar when working day checkboxes change
+  document.querySelectorAll('.day-chip input').forEach(cb => {
+    cb.addEventListener('change', () => { if (calendarMonth) renderCalendar(); });
+  });
 
   // ── File Upload ───────────────────────────────────────────────
   const uploadZone = document.getElementById('upload-zone');
@@ -1137,6 +1360,19 @@
     document.getElementById('preview-section').style.display = 'block';
     document.getElementById('month-badge').textContent = '📅 ' + data.month;
 
+    // Initialise calendar for the detected month
+    if (data.month) {
+      const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      const parts = data.month.split(' ');
+      const mIdx = monthNames.indexOf(parts[0]);
+      const yr   = parseInt(parts[1]);
+      if (mIdx !== -1 && !isNaN(yr)) {
+        calendarMonth = { year: yr, month: mIdx };
+        customOffDays = new Set();
+        renderCalendar();
+      }
+    }
+
     const grid = document.getElementById('teachers-grid');
     grid.innerHTML = '';
     data.teachers.forEach(t => {
@@ -1163,7 +1399,13 @@
     const workingDays = new Set(
       [...document.querySelectorAll('.day-chip input:checked')].map(c => parseInt(c.value))
     );
-    return { staffH: sh, staffM: sm, relax, cutoffMin, workingDays };
+    // Convert customOffDays ("YYYY-MM-DD") to toDateString() keys for quick lookup
+    const offDayKeys = new Set();
+    customOffDays.forEach(ds => {
+      const [y, mo, d] = ds.split('-').map(Number);
+      offDayKeys.add(new Date(y, mo - 1, d).toDateString());
+    });
+    return { staffH: sh, staffM: sm, relax, cutoffMin, workingDays, offDayKeys };
   }
 
   function openTeacherModal(teacher) {
@@ -1176,13 +1418,13 @@
       if (r.status.toLowerCase() === 'in') {
         const d = new Date(r.datetime);
         const py = jsDayToPython(d.getDay());
-        if (settings.workingDays.has(py)) {
+        if (settings.workingDays.has(py) && !settings.offDayKeys.has(d.toDateString())) {
           daysWithAnyIn.add(d.toDateString());
         }
       }
     });
 
-    // All working days in the month for this teacher's data
+    // All working days in the month (excluding custom off days)
     const firstDt = teacherRecs.length ? new Date(teacherRecs[0].datetime) : new Date();
     const year = firstDt.getFullYear();
     const month = firstDt.getMonth();
@@ -1191,7 +1433,9 @@
     for (let d = 1; d <= daysInMonth; d++) {
       const dt = new Date(year, month, d);
       const py = jsDayToPython(dt.getDay());
-      if (settings.workingDays.has(py)) allWorkingDays.push(dt.toDateString());
+      if (settings.workingDays.has(py) && !settings.offDayKeys.has(dt.toDateString())) {
+        allWorkingDays.push(dt.toDateString());
+      }
     }
     const nationalHolidays = new Set(allWorkingDays.filter(ds => !daysWithAnyIn.has(ds)));
 
@@ -1211,7 +1455,7 @@
     Object.entries(byDay).forEach(([dateKey, recs]) => {
       const dt = new Date(recs[0].datetime);
       const py = jsDayToPython(dt.getDay());
-      if (!settings.workingDays.has(py)) return;
+      if (!settings.workingDays.has(py) || settings.offDayKeys.has(dateKey)) return;
       const inRecs = recs.filter(r => r.status.toLowerCase() === 'in');
       if (!inRecs.length) return;
       const firstIn = inRecs.reduce((a, b) => new Date(a.datetime) < new Date(b.datetime) ? a : b);
@@ -1242,13 +1486,14 @@
       const dateKey = dt.toDateString();
       const py = jsDayToPython(dt.getDay());
       const isWorkingDay = settings.workingDays.has(py);
+      const isCustomOff = settings.offDayKeys.has(dateKey);
       const status = r.status.toLowerCase();
 
       let rowClass = 'row-out';
       let badgeClass = 'badge-out';
       let note = '—';
 
-      if (status === 'in' && isWorkingDay) {
+      if (status === 'in' && isWorkingDay && !isCustomOff) {
         const arrMin = dt.getHours() * 60 + dt.getMinutes();
         const dayInRecs = (byDay[dateKey] || []).filter(x => x.status.toLowerCase() === 'in');
         const firstInDt = dayInRecs.length
@@ -1264,6 +1509,8 @@
           badgeClass = 'badge-in-late';
           note = isFirstIn ? `⏰ Late (+${arrMin - settings.cutoffMin}m)` : 'In';
         }
+      } else if (status === 'in' && isCustomOff) {
+        note = 'In (off day)';
       } else if (status === 'in') {
         note = 'In (non-working day)';
       }
@@ -1424,6 +1671,12 @@
     document.getElementById('preview-section').style.display = 'none';
     document.getElementById('download-section').style.display = 'none';
     document.getElementById('generate-btn').disabled = true;
+    // Reset calendar
+    calendarMonth = null;
+    customOffDays = new Set();
+    document.getElementById('cal-month-title').textContent = 'Upload a file to load calendar';
+    document.getElementById('cal-off-badge').textContent = '0 off days';
+    renderCalendar();
   }
 
   // ── Cutoff Preview ────────────────────────────────────────────
@@ -1477,6 +1730,7 @@
     fd.append('relaxation_minutes', document.getElementById('relaxation').value);
     fd.append('working_days', workingDays);
     fd.append('monthly_leave', document.getElementById('monthly-leave').value);
+    fd.append('off_days', [...customOffDays].join(','));
 
     try {
       const res = await fetch('/generate', { method: 'POST', body: fd });
