@@ -1703,6 +1703,23 @@
     return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
   }
 
+  function parseDownloadFilename(contentDisposition) {
+    if (!contentDisposition) return 'Attendance.xlsx';
+    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match) {
+      try {
+        return decodeURIComponent(utf8Match[1].trim());
+      } catch {
+        return utf8Match[1].trim();
+      }
+    }
+    const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+    if (quotedMatch) return quotedMatch[1];
+    const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+    if (plainMatch) return plainMatch[1].trim().replace(/^["']|["']$/g, '');
+    return 'Attendance.xlsx';
+  }
+
   document.getElementById('monthly-leave').addEventListener('input', updateCutoff);
   updateCutoff();
 
@@ -1740,9 +1757,7 @@
       }
 
       const blob = await res.blob();
-      const contentDisp = res.headers.get('Content-Disposition') || '';
-      const fnMatch = contentDisp.match(/filename=(.+)/);
-      const filename = fnMatch ? fnMatch[1].trim() : 'Attendance.xlsx';
+      const filename = parseDownloadFilename(res.headers.get('Content-Disposition'));
 
       const url = URL.createObjectURL(blob);
       const link = document.getElementById('download-link');
