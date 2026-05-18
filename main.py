@@ -11,8 +11,31 @@ from datetime import datetime, time, date, timedelta
 import calendar
 import tempfile
 import os
-import json
-import io
+import re
+import smtplib
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(override=True)
+except ImportError:
+    def _load_env_file(path: str = ".env"):
+        if not os.path.isfile(path):
+            return
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip("'\"")
+                if key:
+                    os.environ[key] = value
+
+    _load_env_file()
 
 app = FastAPI(title="School Attendance System")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -22,6 +45,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def root():
     with open("static/index.html", "r") as f:
         return f.read()
+
+
+@app.get("/email-status")
+async def email_status():
+    """Check whether SMTP is configured (for UI hints)."""
+    return {"configured": is_email_configured()}
 
 
 @app.post("/upload")
@@ -80,40 +109,10 @@ async def generate_report(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
 
-    wd_list = [int(x) for x in working_days.split(",") if x.strip()]
-    off_days_set = {d.strip() for d in off_days.split(",") if d.strip()}
-    settings = {
-        "school_time": school_time,
-        "staff_timing": staff_timing,
-        "relaxation_minutes": relaxation_minutes,
-        "working_days": wd_list,
-        "monthly_leave": monthly_leave,
-        "off_days": off_days_set,
-    }
-
-    teachers_data, national_holidays = calculate_stats(records, settings)
-
-    # Preserve original order from file
-    uid_order = []
-    seen = set()
-    for r in records:
-        if r["user_id"] not in seen:
-            uid_order.append(r["user_id"])
-            seen.add(r["user_id"])
-
-    ordered_teachers = [teachers_data[uid] for uid in uid_order if uid in teachers_data]
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        output_path = tmp.name
-
-    generate_excel(ordered_teachers, settings, national_holidays, output_path)
-
-    # Build a nice filename
-    if records:
-        d = min(r["datetime"] for r in records)
-        fname = f"Attendance-{d.strftime('%b-%Y')}.xlsx"
-    else:
-        fname = "Attendance.xlsx"
+    settings = parse_settings(
+        school_time, staff_timing, relaxation_minutes, working_days, monthly_leave, off_days
+    )
+    output_path, fname = build_report_xlsx(records, settings)
 
     return FileResponse(
         output_path,
@@ -123,7 +122,209 @@ async def generate_report(
     )
 
 
+@app.post("/send-report")
+async def send_teacher_report(
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    email: str = Form(...),
+    school_time: str = Form("08:30"),
+    staff_timing: str = Form("08:15"),
+    relaxation_minutes: int = Form(5),
+    working_days: str = Form("0,1,2,3,4"),
+    monthly_leave: int = Form(1),
+    off_days: str = Form(""),
+):
+    """Generate a single-teacher Excel report and email it."""
+    email = email.strip()
+    if not _is_valid_email(email):
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+
+    content = await file.read()
+    try:
+        records = parse_xls(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+
+    settings = parse_settings(
+        school_time, staff_timing, relaxation_minutes, working_days, monthly_leave, off_days
+    )
+
+    try:
+        output_path, fname, teacher_name = build_report_xlsx(records, settings, user_id=user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        send_report_email(email, teacher_name, fname, output_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {e}")
+    finally:
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+
+    return {"ok": True, "message": f"Report sent to {email}"}
+
+
 # ─── Core Logic ───────────────────────────────────────────────────────────────
+
+def parse_settings(
+    school_time: str,
+    staff_timing: str,
+    relaxation_minutes: int,
+    working_days: str,
+    monthly_leave: int,
+    off_days: str,
+) -> dict:
+    wd_list = [int(x) for x in working_days.split(",") if x.strip()]
+    off_days_set = {d.strip() for d in off_days.split(",") if d.strip()}
+    return {
+        "school_time": school_time,
+        "staff_timing": staff_timing,
+        "relaxation_minutes": relaxation_minutes,
+        "working_days": wd_list,
+        "monthly_leave": monthly_leave,
+        "off_days": off_days_set,
+    }
+
+
+def _sanitize_filename_part(name: str) -> str:
+    cleaned = re.sub(r"[^\w\s-]", "", name, flags=re.UNICODE)
+    cleaned = re.sub(r"\s+", "-", cleaned.strip())
+    return cleaned or "Teacher"
+
+
+def _is_valid_email(email: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+
+
+def build_report_xlsx(records: list, settings: dict, user_id: str | None = None) -> tuple:
+    """Build Excel report. Returns (output_path, filename[, teacher_name])."""
+    teachers_data, national_holidays = calculate_stats(records, settings)
+
+    uid_order = []
+    seen = set()
+    for r in records:
+        if r["user_id"] not in seen:
+            uid_order.append(r["user_id"])
+            seen.add(r["user_id"])
+
+    if user_id is not None:
+        if user_id not in teachers_data:
+            raise ValueError(f"Teacher with ID {user_id} not found in uploaded file.")
+        ordered_teachers = [teachers_data[user_id]]
+        teacher_name = ordered_teachers[0]["name"]
+    else:
+        ordered_teachers = [teachers_data[uid] for uid in uid_order if uid in teachers_data]
+        teacher_name = None
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        output_path = tmp.name
+
+    generate_excel(ordered_teachers, settings, national_holidays, output_path)
+
+    if records:
+        d = min(r["datetime"] for r in records)
+        month_part = d.strftime("%b-%Y")
+    else:
+        month_part = "Report"
+
+    if teacher_name:
+        safe_name = _sanitize_filename_part(teacher_name)
+        fname = f"Attendance-{safe_name}-{month_part}.xlsx"
+    else:
+        fname = f"Attendance-{month_part}.xlsx"
+
+    if user_id is not None:
+        return output_path, fname, teacher_name
+    return output_path, fname
+
+
+def _smtp_password_normalized(host: str, password: str) -> str:
+    """Gmail app passwords must be entered without spaces for SMTP."""
+    p = password.strip()
+    if "gmail" in host.lower():
+        return re.sub(r"\s+", "", p)
+    return p
+
+
+def is_email_configured() -> bool:
+    host = os.environ.get("SMTP_HOST", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASSWORD", "").strip()
+    return bool(host and user and password)
+
+
+def _email_not_configured_message() -> str:
+    return (
+        "Email is not configured. "
+        "Local: copy .env.example to .env and set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, then restart the server. "
+        "Render: add those variables under Environment and redeploy."
+    )
+
+
+def _smtp_auth_error_message(exc: Exception, host: str) -> str:
+    err = str(exc).lower()
+    if "535" in err or "badcredentials" in err or "authentication failed" in err:
+        if "gmail" in host.lower():
+            return (
+                "Gmail rejected the login (535). Use an App Password (16 characters), not your normal "
+                "Gmail password. Paste it without spaces. SMTP_USER must be the same Gmail address. "
+                "If App passwords are disabled for your account, use Outlook SMTP or a provider like Resend."
+            )
+        return (
+            "The mail server rejected the username or password (535). "
+            "Check SMTP_USER and SMTP_PASSWORD; many providers require an app-specific password, not your web login."
+        )
+    return f"Mail server error: {exc}"
+
+
+def send_report_email(to_email: str, teacher_name: str, attachment_name: str, file_path: str):
+    host = os.environ.get("SMTP_HOST", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = _smtp_password_normalized(host, os.environ.get("SMTP_PASSWORD", ""))
+    from_addr = os.environ.get("SMTP_FROM", user).strip() or user
+
+    if not is_email_configured():
+        raise HTTPException(status_code=503, detail=_email_not_configured_message())
+
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes")
+
+    subject = f"Attendance Report — {teacher_name}"
+    body = (
+        f"Dear {teacher_name},\n\n"
+        "Please find your attendance report attached.\n\n"
+        "Regards,\nSchool Attendance System"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = from_addr
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with open(file_path, "rb") as f:
+        part = MIMEApplication(f.read(), Name=attachment_name)
+    part["Content-Disposition"] = f'attachment; filename="{attachment_name}"'
+    msg.attach(part)
+
+    try:
+        if use_tls:
+            with smtplib.SMTP(host, port, timeout=30) as server:
+                server.starttls()
+                server.login(user, password)
+                server.sendmail(from_addr, [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP_SSL(host, port, timeout=30) as server:
+                server.login(user, password)
+                server.sendmail(from_addr, [to_email], msg.as_string())
+    except smtplib.SMTPAuthenticationError as e:
+        raise HTTPException(status_code=401, detail=_smtp_auth_error_message(e, host)) from e
+    except smtplib.SMTPException as e:
+        raise HTTPException(status_code=502, detail=f"Failed to send email: {e}") from e
+
 
 def parse_xls(file_content: bytes) -> list:
     wb = xlrd.open_workbook(file_contents=file_content)

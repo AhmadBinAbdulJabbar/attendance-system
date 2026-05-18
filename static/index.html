@@ -518,6 +518,84 @@
     }
     .btn-print:hover { background: rgba(255,255,255,0.3); }
 
+    .modal-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .btn-send {
+      background: rgba(255,255,255,0.18);
+      border: 1.5px solid rgba(255,255,255,0.4);
+      color: white;
+      padding: 8px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    .btn-send:hover { background: rgba(255,255,255,0.3); }
+    .btn-send:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .send-email-panel {
+      display: none;
+      background: rgba(255,255,255,0.12);
+      border-top: 1px solid rgba(255,255,255,0.2);
+      padding: 14px 28px;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .send-email-panel.open { display: flex; }
+    .send-email-panel label {
+      font-size: 12px;
+      font-weight: 700;
+      opacity: 0.9;
+      flex-shrink: 0;
+    }
+    .send-email-panel input[type="email"] {
+      flex: 1;
+      min-width: 200px;
+      padding: 9px 12px;
+      border: 1.5px solid rgba(255,255,255,0.35);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.95);
+      font-size: 14px;
+      color: var(--text);
+    }
+    .send-email-panel input[type="email"]:focus {
+      outline: none;
+      border-color: white;
+    }
+    .btn-send-confirm {
+      background: white;
+      color: var(--primary);
+      border: none;
+      padding: 9px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-send-confirm:hover { background: #EBF5FF; }
+    .btn-send-confirm:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-send-cancel {
+      background: transparent;
+      border: 1.5px solid rgba(255,255,255,0.45);
+      color: white;
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-send-cancel:hover { background: rgba(255,255,255,0.15); }
+
     /* ── Print area (hidden on screen, shown on print) ── */
     #print-area { display: none; }
 
@@ -694,6 +772,8 @@
     .modal-header {
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       color: white;
+    }
+    .modal-header-top {
       padding: 22px 28px;
       display: flex;
       align-items: center;
@@ -1156,13 +1236,24 @@
 <div class="modal-overlay" id="modal-overlay" style="display:none" onclick="handleOverlayClick(event)">
   <div class="modal" id="modal">
     <div class="modal-header">
-      <div class="mh-avatar">👩‍🏫</div>
-      <div class="mh-info">
-        <div class="mh-name" id="modal-name"></div>
-        <div class="mh-sub" id="modal-sub"></div>
+      <div class="modal-header-top">
+        <div class="mh-avatar">👩‍🏫</div>
+        <div class="mh-info">
+          <div class="mh-name" id="modal-name"></div>
+          <div class="mh-sub" id="modal-sub"></div>
+        </div>
+        <div class="modal-header-actions">
+          <button class="btn-print" onclick="printTeacher()">Print</button>
+          <button class="btn-send" id="btn-send-report" onclick="toggleSendPanel()">Send Report</button>
+          <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
       </div>
-      <button class="btn-print" onclick="printTeacher()">🖨️ Print</button>
-      <button class="modal-close" onclick="closeModal()">✕</button>
+      <div class="send-email-panel" id="send-email-panel">
+        <label for="send-email-input">Email to:</label>
+        <input type="email" id="send-email-input" placeholder="teacher@example.com" />
+        <button class="btn-send-confirm" id="btn-send-confirm" onclick="sendTeacherReport()">Send</button>
+        <button class="btn-send-cancel" onclick="toggleSendPanel(false)">Cancel</button>
+      </div>
     </div>
 
     <!-- Stats bar -->
@@ -1215,6 +1306,7 @@
   let allRecords = [];   // full record list from server
   let customOffDays = new Set();  // Set of "YYYY-MM-DD" strings
   let calendarMonth = null;       // { year, month } where month is 0-indexed (JS)
+  let currentModalTeacher = null;
 
   const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   // JS getDay(): 0=Sun,1=Mon,...,6=Sat
@@ -1409,6 +1501,8 @@
   }
 
   function openTeacherModal(teacher) {
+    currentModalTeacher = teacher;
+    toggleSendPanel(false);
     const settings = getSettings();
     const teacherRecs = allRecords.filter(r => r.user_id === teacher.user_id);
 
@@ -1503,11 +1597,11 @@
         if (arrMin <= settings.cutoffMin) {
           rowClass = 'row-in-time';
           badgeClass = 'badge-in-time';
-          note = isFirstIn ? '✅ On Time' : 'In';
+          note = isFirstIn ? 'On Time' : 'In';
         } else {
           rowClass = 'row-in-late';
           badgeClass = 'badge-in-late';
-          note = isFirstIn ? `⏰ Late (+${arrMin - settings.cutoffMin}m)` : 'In';
+          note = isFirstIn ? `Late (+${arrMin - settings.cutoffMin}m)` : 'In';
         }
       } else if (status === 'in' && isCustomOff) {
         note = 'In (off day)';
@@ -1541,6 +1635,84 @@
   function closeModal() {
     document.getElementById('modal-overlay').style.display = 'none';
     document.body.style.overflow = '';
+    currentModalTeacher = null;
+    toggleSendPanel(false);
+  }
+
+  function toggleSendPanel(forceOpen) {
+    const panel = document.getElementById('send-email-panel');
+    const isOpen = typeof forceOpen === 'boolean' ? forceOpen : !panel.classList.contains('open');
+    panel.classList.toggle('open', isOpen);
+    if (!isOpen) {
+      document.getElementById('send-email-input').value = '';
+    } else {
+      setTimeout(() => document.getElementById('send-email-input').focus(), 50);
+    }
+  }
+
+  function appendReportSettings(fd) {
+    const workingDays = [...document.querySelectorAll('.day-chip input:checked')]
+      .map(c => c.value).join(',');
+    fd.append('school_time', document.getElementById('school-time').value);
+    fd.append('staff_timing', document.getElementById('staff-timing').value);
+    fd.append('relaxation_minutes', document.getElementById('relaxation').value);
+    fd.append('working_days', workingDays);
+    fd.append('monthly_leave', document.getElementById('monthly-leave').value);
+    fd.append('off_days', [...customOffDays].join(','));
+    return fd;
+  }
+
+  async function sendTeacherReport() {
+    if (!selectedFile) {
+      showToast('Please upload a file first.', 'error');
+      return;
+    }
+    if (!currentModalTeacher) {
+      showToast('No teacher selected.', 'error');
+      return;
+    }
+
+    const email = document.getElementById('send-email-input').value.trim();
+    if (!email) {
+      showToast('Please enter an email address.', 'error');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('Please enter a valid email address.', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('btn-send-confirm');
+    const sendBtn = document.getElementById('btn-send-report');
+    btn.disabled = true;
+    sendBtn.disabled = true;
+    const prevLabel = btn.textContent;
+    btn.textContent = 'Sending…';
+
+    const fd = appendReportSettings(new FormData());
+    fd.append('file', selectedFile);
+    fd.append('user_id', currentModalTeacher.user_id);
+    fd.append('email', email);
+
+    try {
+      const res = await fetch('/send-report', { method: 'POST', body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map(e => e.msg || String(e)).join(', ')
+          : (detail || 'Failed to send report');
+        throw new Error(msg);
+      }
+      showToast(data.message || `Report sent to ${email}`, 'success');
+      toggleSendPanel(false);
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      sendBtn.disabled = false;
+      btn.textContent = prevLabel;
+    }
   }
 
   function handleOverlayClick(e) {
@@ -1737,23 +1909,18 @@
     btnIcon.style.display = 'none';
     btnLabel.textContent = 'Generating…';
 
-    const workingDays = [...document.querySelectorAll('.day-chip input:checked')]
-      .map(c => c.value).join(',');
-
-    const fd = new FormData();
+    const fd = appendReportSettings(new FormData());
     fd.append('file', selectedFile);
-    fd.append('school_time', document.getElementById('school-time').value);
-    fd.append('staff_timing', document.getElementById('staff-timing').value);
-    fd.append('relaxation_minutes', document.getElementById('relaxation').value);
-    fd.append('working_days', workingDays);
-    fd.append('monthly_leave', document.getElementById('monthly-leave').value);
-    fd.append('off_days', [...customOffDays].join(','));
 
     try {
       const res = await fetch('/generate', { method: 'POST', body: fd });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || 'Generation failed');
+        const detail = err.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map(e => e.msg || String(e)).join(', ')
+          : (detail || 'Generation failed');
+        throw new Error(msg);
       }
 
       const blob = await res.blob();
