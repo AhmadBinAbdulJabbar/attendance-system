@@ -207,6 +207,7 @@ def calculate_stats(records: list, settings: dict):
 
         right_time = 0
         late = 0
+        late_dates: set = set()
 
         for d, day_records in records_by_day.items():
             if d.weekday() not in working_days_set or d in off_days_dates:
@@ -219,6 +220,7 @@ def calculate_stats(records: list, settings: dict):
                 right_time += 1
             else:
                 late += 1
+                late_dates.add(d)
 
         days_teacher_attended = {
             d for d in records_by_day
@@ -232,6 +234,7 @@ def calculate_stats(records: list, settings: dict):
 
         teacher["right_time"] = right_time
         teacher["late"] = late
+        teacher["late_dates"] = late_dates
         teacher["leave"] = leave
 
     return teachers, national_holidays
@@ -247,6 +250,7 @@ def _make_border(style="thin"):
 HEADER_FILL = PatternFill("solid", fgColor="1E3A5F")
 SUBHEADER_FILL = PatternFill("solid", fgColor="2E6DA4")
 ALT_ROW_FILL = PatternFill("solid", fgColor="EBF3FB")
+LATE_ROW_FILL = PatternFill("solid", fgColor="FFF9C4")
 SUMMARY_FILL = PatternFill("solid", fgColor="E8F5E9")
 IN_FONT_COLOR = "1B5E20"
 OUT_FONT_COLOR = "B71C1C"
@@ -261,6 +265,16 @@ def _fmt_time_12(h: int, m: int) -> str:
     ampm = "AM" if h < 12 else "PM"
     h12 = h % 12 or 12
     return f"{h12}:{m:02d} {ampm}"
+
+
+def _first_entry_per_day(records: list) -> list:
+    """Keep only the earliest record for each calendar day."""
+    by_day: dict = {}
+    for r in records:
+        d = r["datetime"].date()
+        if d not in by_day or r["datetime"] < by_day[d]["datetime"]:
+            by_day[d] = r
+    return sorted(by_day.values(), key=lambda x: x["datetime"])
 
 
 def generate_excel(teachers: list, settings: dict, national_holidays: set, output_path: str):
@@ -325,21 +339,25 @@ def generate_excel(teachers: list, settings: dict, national_holidays: set, outpu
         ws.row_dimensions[row].height = 18
         row += 1
 
-        # ── Data rows ─────────────────────────────────────────────────
-        recs1 = t1["records"]
-        recs2 = t2["records"] if t2 else []
+        # ── Data rows (one entry per day; extras ignored) ───────────────
+        recs1 = _first_entry_per_day(t1["records"])
+        recs2 = _first_entry_per_day(t2["records"]) if t2 else []
+        late_dates1 = t1.get("late_dates", set())
+        late_dates2 = t2.get("late_dates", set()) if t2 else set()
         max_rows = max(len(recs1), len(recs2))
 
         for idx in range(max_rows):
-            fill = ALT_ROW_FILL if idx % 2 == 0 else PatternFill("solid", fgColor="FFFFFF")
+            alt_fill = ALT_ROW_FILL if idx % 2 == 0 else PatternFill("solid", fgColor="FFFFFF")
 
             if idx < len(recs1):
                 r = recs1[idx]
+                fill = LATE_ROW_FILL if r["datetime"].date() in late_dates1 else alt_fill
                 status_color = IN_FONT_COLOR if r["status"].lower() == "in" else OUT_FONT_COLOR
                 _write_record_row(ws, row, 1, r, fill, status_color)
 
             if idx < len(recs2) and t2:
                 r = recs2[idx]
+                fill = LATE_ROW_FILL if r["datetime"].date() in late_dates2 else alt_fill
                 status_color = IN_FONT_COLOR if r["status"].lower() == "in" else OUT_FONT_COLOR
                 _write_record_row(ws, row, 6, r, fill, status_color)
 
